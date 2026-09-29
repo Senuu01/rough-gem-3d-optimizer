@@ -1,0 +1,60 @@
+# Default parameters for rough-gem-3d-reconstructor.
+#
+# IMPORTANT: these are initial starting values only. They have NOT been tuned
+# for rough gemstones and must be adjusted experimentally. Every run stores the
+# exact values it used in runs/<run_id>/run_config.json.
+
+paths:
+  runs_dir: runs            # relative to the project root unless absolute
+
+tools:
+  colmap_executable: colmap # name on PATH or absolute path
+  ffmpeg_executable: ffmpeg
+  ffprobe_executable: ffprobe
+
+capture:
+  mode: orbit_camera        # orbit_camera | turntable
+
+video:
+  # "interval": one frame every `interval_seconds`
+  # "auto": keep a frame once enough visual motion has accumulated
+  sampling: interval
+  interval_seconds: 0.5
+  auto_probe_interval_seconds: 0.1   # how often to inspect frames in auto mode
+  auto_min_motion_px: 12.0           # accumulated median optical flow (at 640 px width) before keeping a frame
+  auto_max_interval_seconds: 2.0     # always keep a frame at least this often
+  max_frames_per_video: 300
+  jpeg_quality: 95
+
+images:
+  jpeg_quality: 95          # used only when an image must be re-encoded (HEIC, EXIF rotation)
+
+reconstruction:
+  # auto: sequential for video-only datasets, exhaustive for photos / mixed
+  # datasets up to auto_exhaustive_max_images, sequential above that.
+  matcher: auto             # auto | exhaustive | sequential
+  auto_exhaustive_max_images: 200
+  sequential_overlap: 10    # neighbouring frames matched by the sequential matcher
+  single_camera: true       # all images share one set of intrinsics (same phone, same zoom)
+  camera_model: SIMPLE_RADIAL
+  use_gpu: true             # automatically falls back to CPU when COLMAP lacks CUDA
+  max_image_size: 2000      # feature extraction & undistortion max side in pixels
+  max_num_features: 8192
+  min_images: 8             # refuse to reconstruct with fewer images
+  min_registered_ratio: 0.3 # warn when fewer than this fraction of images register
+  dense:
+    enabled: true           # requires COLMAP built with CUDA; otherwise sparse fallback is used
+    geom_consistency: true
+    window_radius: 5
+  mesher: poisson           # poisson | delaunay
+  poisson_trim: 10
+  # When dense stereo cannot run (no CUDA, e.g. macOS) a coarse surface is
+  # built directly from the sparse model with COLMAP's Delaunay mesher.
+  sparse_fallback: true
+
+mesh:
+  preview_max_faces: 150000 # meshes larger than this are decimated for the viewer only
+  preview_max_points: 150000
+  # Milestone 2 (not yet implemented):
+  simplify: true
+  target_face_ratio: 0.5

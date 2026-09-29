@@ -1,0 +1,16 @@
+# Core runtime dependencies (Milestone 1).
+# COLMAP and FFmpeg are system tools and are NOT installed by pip - see README.md.
+numpy>=1.26,<3
+opencv-python-headless>=4.9
+Pillow>=10.3
+pillow-heif>=0.16          # HEIC/HEIF (iPhone) photo support
+PyYAML>=6.0
+streamlit>=1.50
+watchdog>=4.0              # faster Streamlit auto-reload (optional)
+plotly>=5.22
+trimesh>=4.4
+scipy>=1.11                # trimesh graph operations (connected components)
+fast-simplification>=0.1.7 # decimation for large meshes in the 3D preview
+
+# Development / testing
+pytest>=8.0

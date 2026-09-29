@@ -1,0 +1,6 @@
+[server]
+# Smartphone videos are often larger than Streamlit's 200 MB default.
+maxUploadSize = 4096
+
+[browser]
+gatherUsageStats = false
