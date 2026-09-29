@@ -13,7 +13,33 @@ tools:
   ffprobe_executable: ffprobe
 
 capture:
-  mode: orbit_camera        # orbit_camera | turntable
+  # orbit_camera: stone still, camera moves around it (no masks needed)
+  # turntable:    camera still, stone rotates on a turntable (masks required)
+  # handheld:     camera still, stone rotated in the hand (masks required)
+  mode: orbit_camera
+
+masking:
+  # SAM 2 video segmentation (optional install: pip install -r requirements-sam2.txt)
+  sam2_model: facebook/sam2.1-hiera-small   # or facebook/sam2.1-hiera-tiny (faster, less accurate)
+  device: auto              # auto | cuda | mps | cpu
+  chunk_size: 60            # frames tracked per SAM 2 session (bounds memory use)
+  erode_px: 7               # shrink masks so silhouette-edge background is ignored
+  min_area_ratio: 0.002     # masks smaller than this fraction of the frame are rejected
+  max_area_ratio: 0.6       # masks larger than this are probably wrong and are rejected
+
+# Extra COLMAP settings applied in turntable / handheld modes. The masked stone
+# covers only a few percent of each frame, so features are extracted at full
+# resolution with denser SIFT settings and mapper thresholds are relaxed.
+object_capture:
+  max_image_size: 3840
+  peak_threshold: 0.004     # COLMAP default 0.0067; lower = more features on low-texture surfaces
+  domain_size_pooling: true
+  estimate_affine_shape: true
+  guided_matching: true
+  sequential_overlap: 15
+  init_min_num_inliers: 30  # COLMAP default 100
+  abs_pose_min_num_inliers: 12  # COLMAP default 30
+  min_num_matches: 10       # COLMAP default 15
 
 video:
   # "interval": one frame every `interval_seconds`

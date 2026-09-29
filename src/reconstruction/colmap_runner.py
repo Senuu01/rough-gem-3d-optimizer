@@ -16,7 +16,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from src.reconstruction.commands import ColmapCapabilities, CommandBuilder
-from src.utils.config import ReconstructionConfig, ToolsConfig
+from src.utils.config import ObjectCaptureConfig, ReconstructionConfig, ToolsConfig
 from src.utils.logging import get_logger
 from src.utils.process import ProcessResult, capture_output, run_command
 
@@ -132,19 +132,21 @@ class ColmapRunner:
         cfg: ReconstructionConfig,
         logs_dir: Path,
         use_gpu: bool | None = None,
+        object_cfg: ObjectCaptureConfig | None = None,
     ) -> None:
         self.env = env
         self.cfg = cfg
         self.logs_dir = logs_dir
+        self.object_cfg = object_cfg
         self.use_gpu = (cfg.use_gpu and bool(env.has_cuda)) if use_gpu is None else use_gpu
         self.caps = ColmapCapabilities(env.executable)
-        self.commands = CommandBuilder(self.caps, cfg, self.use_gpu)
+        self.commands = CommandBuilder(self.caps, cfg, self.use_gpu, object_cfg)
         self.executed: list[dict] = []
 
     def set_use_gpu(self, use_gpu: bool) -> None:
         """Switch GPU usage for subsequent stages (used for CPU fallback)."""
         self.use_gpu = use_gpu
-        self.commands = CommandBuilder(self.caps, self.cfg, use_gpu)
+        self.commands = CommandBuilder(self.caps, self.cfg, use_gpu, self.object_cfg)
 
     def run(self, stage_key: str, stage_label: str, args: list[str], log_name: str | None = None) -> ProcessResult:
         """Execute ``args``; raise :class:`ColmapStageError` on non-zero exit."""
@@ -159,9 +161,22 @@ class ColmapRunner:
         return result
 
     # ------------------------------------------------------------------ stages
-    def extract_features(self, database: Path, images: Path, masks: Path | None = None) -> ProcessResult:
-        return self.run("feature_extraction", "Feature extraction",
-                        self.commands.feature_extractor(database, images, masks))
+    def extract_features(
+        self,
+        database: Path,
+        images: Path,
+        masks: Path | None = None,
+        image_list: Path | None = None,
+        single_camera: bool | None = None,
+        single_camera_per_folder: bool = False,
+    ) -> ProcessResult:
+        return self.run(
+            "feature_extraction",
+            "Feature extraction",
+            self.commands.feature_extractor(
+                database, images, masks, image_list, single_camera, single_camera_per_folder
+            ),
+        )
 
     def match(self, matcher: str, database: Path) -> ProcessResult:
         return self.run("matching", f"{matcher.capitalize()} matching", self.commands.matcher(matcher, database))
@@ -185,8 +200,8 @@ class ColmapRunner:
     def patch_match(self, dense: Path) -> ProcessResult:
         return self.run("patch_match", "Dense stereo (patch_match_stereo)", self.commands.patch_match_stereo(dense))
 
-    def fuse(self, dense: Path, output: Path) -> ProcessResult:
-        return self.run("fusion", "Stereo fusion", self.commands.stereo_fusion(dense, output))
+    def fuse(self, dense: Path, output: Path, masks: Path | None = None) -> ProcessResult:
+        return self.run("fusion", "Stereo fusion", self.commands.stereo_fusion(dense, output, masks))
 
     def poisson(self, fused_ply: Path, output: Path) -> ProcessResult:
         return self.run("meshing", "Poisson meshing", self.commands.poisson_mesher(fused_ply, output), "poisson_mesher")

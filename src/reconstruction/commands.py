@@ -13,7 +13,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from src.utils.config import ReconstructionConfig
+from src.utils.config import ObjectCaptureConfig, ReconstructionConfig
 from src.utils.logging import get_logger
 from src.utils.process import capture_output
 
@@ -62,12 +62,23 @@ class ColmapCapabilities:
 
 
 class CommandBuilder:
-    """Builds argument lists for every pipeline stage."""
+    """Builds argument lists for every pipeline stage.
 
-    def __init__(self, caps: ColmapCapabilities, cfg: ReconstructionConfig, use_gpu: bool) -> None:
+    When ``object_cfg`` is given (turntable / hand-held captures), feature
+    extraction, matching and mapping use the object-capture settings.
+    """
+
+    def __init__(
+        self,
+        caps: ColmapCapabilities,
+        cfg: ReconstructionConfig,
+        use_gpu: bool,
+        object_cfg: ObjectCaptureConfig | None = None,
+    ) -> None:
         self.caps = caps
         self.cfg = cfg
         self.use_gpu = use_gpu
+        self.object_cfg = object_cfg
 
     def _add(self, args: list[str], command: str, value: str, *candidates: str) -> None:
         name = self.caps.resolve(command, *candidates)
@@ -79,39 +90,66 @@ class CommandBuilder:
     def _base(self, command: str) -> list[str]:
         return [self.caps.executable, command]
 
-    def feature_extractor(self, database: Path, images: Path, masks: Path | None = None) -> list[str]:
+    def feature_extractor(
+        self,
+        database: Path,
+        images: Path,
+        masks: Path | None = None,
+        image_list: Path | None = None,
+        single_camera: bool | None = None,
+        single_camera_per_folder: bool = False,
+    ) -> list[str]:
         cmd = "feature_extractor"
+        obj = self.object_cfg
         args = self._base(cmd) + ["--database_path", str(database), "--image_path", str(images)]
-        self._add(args, cmd, _flag(self.cfg.single_camera), "ImageReader.single_camera")
+        if image_list is not None:
+            args += ["--image_list_path", str(image_list)]
+        share = self.cfg.single_camera if single_camera is None else single_camera
+        self._add(args, cmd, _flag(share), "ImageReader.single_camera")
+        if single_camera_per_folder:
+            self._add(args, cmd, "1", "ImageReader.single_camera_per_folder")
         self._add(args, cmd, self.cfg.camera_model, "ImageReader.camera_model")
         if masks is not None:
             self._add(args, cmd, str(masks), "ImageReader.mask_path")
         self._add(args, cmd, _flag(self.use_gpu), "FeatureExtraction.use_gpu", "SiftExtraction.use_gpu")
-        self._add(
-            args, cmd, str(self.cfg.max_image_size),
-            "FeatureExtraction.max_image_size", "SiftExtraction.max_image_size",
-        )
+        max_size = obj.max_image_size if obj else self.cfg.max_image_size
+        self._add(args, cmd, str(max_size), "FeatureExtraction.max_image_size", "SiftExtraction.max_image_size")
         self._add(args, cmd, str(self.cfg.max_num_features), "SiftExtraction.max_num_features")
+        if obj:
+            self._add(args, cmd, str(obj.peak_threshold), "SiftExtraction.peak_threshold")
+            self._add(args, cmd, _flag(obj.domain_size_pooling), "SiftExtraction.domain_size_pooling")
+            self._add(args, cmd, _flag(obj.estimate_affine_shape), "SiftExtraction.estimate_affine_shape")
         return args
 
     def matcher(self, matcher: str, database: Path) -> list[str]:
         if matcher not in ("exhaustive", "sequential"):
             raise ValueError(f"Unsupported matcher: {matcher}")
         cmd = f"{matcher}_matcher"
+        obj = self.object_cfg
         args = self._base(cmd) + ["--database_path", str(database)]
         self._add(args, cmd, _flag(self.use_gpu), "FeatureMatching.use_gpu", "SiftMatching.use_gpu")
+        if obj and obj.guided_matching:
+            self._add(args, cmd, "1", "FeatureMatching.guided_matching", "SiftMatching.guided_matching")
         if matcher == "sequential":
-            self._add(args, cmd, str(self.cfg.sequential_overlap), "SequentialMatching.overlap")
+            overlap = obj.sequential_overlap if obj else self.cfg.sequential_overlap
+            self._add(args, cmd, str(overlap), "SequentialMatching.overlap")
             # Loop detection needs a separately downloaded vocabulary tree.
             self._add(args, cmd, "0", "SequentialMatching.loop_detection")
         return args
 
     def mapper(self, database: Path, images: Path, output: Path) -> list[str]:
-        return self._base("mapper") + [
+        cmd = "mapper"
+        args = self._base(cmd) + [
             "--database_path", str(database),
             "--image_path", str(images),
             "--output_path", str(output),
         ]
+        if self.object_cfg:
+            obj = self.object_cfg
+            self._add(args, cmd, str(obj.init_min_num_inliers), "Mapper.init_min_num_inliers")
+            self._add(args, cmd, str(obj.abs_pose_min_num_inliers), "Mapper.abs_pose_min_num_inliers")
+            self._add(args, cmd, str(obj.min_num_matches), "Mapper.min_num_matches")
+        return args
 
     def model_converter(self, model: Path, output: Path, output_type: str) -> list[str]:
         return self._base("model_converter") + [
@@ -139,14 +177,18 @@ class CommandBuilder:
         self._add(args, cmd, str(self.cfg.dense.window_radius), "PatchMatchStereo.window_radius")
         return args
 
-    def stereo_fusion(self, dense: Path, output: Path) -> list[str]:
+    def stereo_fusion(self, dense: Path, output: Path, masks: Path | None = None) -> list[str]:
+        cmd = "stereo_fusion"
         input_type = "geometric" if self.cfg.dense.geom_consistency else "photometric"
-        return self._base("stereo_fusion") + [
+        args = self._base(cmd) + [
             "--workspace_path", str(dense),
             "--workspace_format", "COLMAP",
             "--input_type", input_type,
             "--output_path", str(output),
         ]
+        if masks is not None:
+            self._add(args, cmd, str(masks), "StereoFusion.mask_path")
+        return args
 
     def poisson_mesher(self, fused_ply: Path, output: Path) -> list[str]:
         cmd = "poisson_mesher"

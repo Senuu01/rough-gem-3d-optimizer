@@ -22,20 +22,29 @@ sidebar_run_selector()
 base = app_config()
 
 st.subheader("Capture mode")
-mode_label = st.radio(
+mode_labels = {"orbit_camera": "Orbit Camera", "turntable": "Turntable", "handheld": "Hand-held (rotated in hand)"}
+mode = st.radio(
     "How was the gemstone captured?",
-    ["Orbit Camera", "Turntable"],
-    index=0 if base.capture.mode == "orbit_camera" else 1,
+    list(mode_labels),
+    index=list(mode_labels).index(base.capture.mode),
+    format_func=mode_labels.get,
     horizontal=True,
     help="Orbit: stone stationary, phone moves around it (recommended). "
-    "Turntable: phone fixed, stone rotates.",
+    "Turntable: phone fixed, stone rotates on a turntable. "
+    "Hand-held: phone fixed, stone turned in the fingers.",
 )
-mode = "orbit_camera" if mode_label == "Orbit Camera" else "turntable"
-if mode == "turntable":
-    st.warning(
-        "Turntable captures need background masks so COLMAP ignores the static scene. Masking is not "
-        "implemented yet (Milestone 2), so turntable reconstructions are expected to fail or be wrong. "
-        "Use Orbit Camera captures to test Milestone 1."
+if mode in ("turntable", "handheld"):
+    st.info(
+        "The camera is static and the stone moves, so COLMAP must only see the stone. After uploading, "
+        "go to **Preprocess**, click the stone in the first frame and generate masks with SAM 2 "
+        "(requires `pip install -r requirements-sam2.txt`)."
+    )
+if mode == "handheld":
+    st.markdown(
+        "**Hand-held capture tips:** hold the stone by its two ends with your fingertips; rotate it slowly "
+        "through a full turn, then re-grip and turn about another axis; keep the phone still (tripod or "
+        "propped); use soft, even light; a plain **black matte background** makes masking much more "
+        "reliable. Transparent stones may still fail (refraction) - a temporary matte coating helps."
     )
 
 st.subheader("Files")
@@ -62,7 +71,9 @@ with st.expander("Reconstruction settings"):
         help="auto: sequential for video-only datasets, exhaustive for photos/mixed.",
     )
     single_camera = st.checkbox(
-        "All images come from the same camera & zoom (shared intrinsics)", base.reconstruction.single_camera
+        "All images come from the same camera & zoom (shared intrinsics)",
+        base.reconstruction.single_camera,
+        help="Photos and videos with different resolutions each get their own camera automatically.",
     )
     use_gpu = st.checkbox("Use GPU when available", base.reconstruction.use_gpu)
     dense_enabled = st.checkbox("Dense reconstruction (requires CUDA)", base.reconstruction.dense.enabled)
@@ -115,4 +126,6 @@ if st.button("Create run and prepare images", type="primary", disabled=not uploa
             f"Only {len(report.images)} images - at least {config.reconstruction.min_images} are required. "
             "Upload more views or use denser video sampling."
         )
+    if config.capture.requires_masks:
+        st.info("Next step: on **Preprocess**, click the stone in each video's first frame and generate masks.")
     st.page_link("pages/2_Preprocess.py", label="Continue to Preprocess", icon="➡️")

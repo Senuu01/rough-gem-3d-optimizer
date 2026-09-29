@@ -7,6 +7,9 @@ pillow-heif>=0.16          # HEIC/HEIF (iPhone) photo support
 PyYAML>=6.0
 streamlit>=1.50
 watchdog>=4.0              # faster Streamlit auto-reload (optional)
+streamlit-image-coordinates>=0.1.9  # click-to-prompt for gemstone masks
+
+# SAM 2 masking for turntable / hand-held captures is optional: see requirements-sam2.txt
 plotly>=5.22
 trimesh>=4.4
 scipy>=1.11                # trimesh graph operations (connected components)

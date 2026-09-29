@@ -1,0 +1,7 @@
+# Optional: SAM 2 gemstone segmentation for turntable / hand-held captures.
+# Installs PyTorch (~1-2 GB with model weights). Runs on NVIDIA CUDA, Apple Silicon (MPS) or CPU.
+# On first use the model weights are downloaded from Hugging Face (~180 MB for hiera-small).
+torch>=2.5
+torchvision>=0.20
+sam2>=1.1
+huggingface_hub>=0.23

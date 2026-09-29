@@ -7,6 +7,7 @@ import json
 import streamlit as st
 
 from src.ingestion.dataset import load_ingestion_report
+from src.preprocessing.masking import frame_mask_info
 from src.reconstruction.pipeline import load_run_config
 from src.reconstruction.progress import STAGES, read_status
 from src.ui.common import environment_status, render_environment, require_run
@@ -83,10 +84,26 @@ col2.metric("Capture mode", config.capture.mode)
 col3.metric("Matcher", config.reconstruction.matcher)
 col4.metric("Dense", "on" if config.reconstruction.dense.enabled else "off")
 
+masks_ready = True
+if config.capture.requires_masks and report:
+    usable = sum(1 for i in frame_mask_info(run, report, config.masking) if i.usable)
+    masks_ready = usable >= config.reconstruction.min_images
+    if usable == 0:
+        st.warning(
+            f"**{config.capture.mode} mode needs gemstone masks before reconstruction.** Go to Preprocess, "
+            "click the stone in the first frame of each video, then press *Generate masks*."
+        )
+        st.page_link("pages/2_Preprocess.py", label="Go to Preprocess to create masks", icon="🎭")
+    elif not masks_ready:
+        st.warning(f"Only {usable} frames have usable masks (need {config.reconstruction.min_images}).")
+    else:
+        st.caption(f"{usable}/{len(report.images)} frames have usable masks and will be sent to COLMAP.")
+
 running = is_running(run)
 b1, b2, _ = st.columns([1, 1, 4])
 start_label = "Re-run reconstruction" if run.status_path.is_file() else "Start reconstruction"
-if b1.button(start_label, type="primary", disabled=running or env.colmap is None or not report):
+if b1.button(start_label, type="primary",
+             disabled=running or env.colmap is None or not report or not masks_ready):
     launch(run)
     st.session_state["was_running"] = True
     st.rerun()

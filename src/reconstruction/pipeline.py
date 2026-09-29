@@ -14,9 +14,12 @@ from __future__ import annotations
 
 import datetime as _dt
 import shutil
+import statistics
 import time
+from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +29,7 @@ from src.ingestion.dataset import IngestionReport, load_ingestion_report, prepar
 from src.ingestion.video import ffmpeg_version
 from src.mesh.export import export_mesh
 from src.mesh.processor import MeshLoadError, load_mesh, mesh_statistics
+from src.preprocessing.masking import frame_mask_info, load_prompts, write_image_list
 from src.reconstruction.colmap_runner import (
     ColmapEnvironment,
     ColmapNotFoundError,
@@ -34,6 +38,7 @@ from src.reconstruction.colmap_runner import (
     detect_colmap,
 )
 from src.reconstruction.progress import ProgressTracker, write_json_atomic
+from src.reconstruction.views import layout_views, list_frame_names
 from src.reconstruction.statistics import (
     SparseStats,
     StatisticsError,
@@ -51,7 +56,7 @@ logger = get_logger("pipeline")
 RUN_CONFIG_YAML = "config.yaml"
 MIN_REGISTERED_IMAGES = 3
 # Written before the pipeline starts (UI launcher, frame preparation); not part of an attempt.
-_KEEP_LOGS = {"runner_stdout.log", "ingestion.log", "ingestion_ui.log"}
+_KEEP_LOGS = {"runner_stdout.log", "ingestion.log", "ingestion_ui.log", "masking.log", "masking_stdout.log"}
 
 
 class PipelineError(RuntimeError):
@@ -113,6 +118,9 @@ class ReconstructionPipeline:
         self.report: IngestionReport | None = None
         self.best_model: Path | None = None
         self.dense_ok = False
+        self.masks_used: Path | None = None
+        self.image_list: Path | None = None
+        self.colmap_image_dir: Path | None = None
         self.metrics: dict[str, Any] = {}
 
     # ---------------------------------------------------------------- helpers
@@ -158,7 +166,8 @@ class ReconstructionPipeline:
             except ColmapNotFoundError as exc:
                 raise PipelineError("prepare", str(exc)) from exc
             logger.info("COLMAP: %s", self.env.banner)
-            self.runner = ColmapRunner(self.env, self.rcfg, run.logs_dir)
+            object_cfg = self.config.object_capture if self.config.capture.requires_masks else None
+            self.runner = ColmapRunner(self.env, self.rcfg, run.logs_dir, object_cfg=object_cfg)
             if self.rcfg.use_gpu and not self.runner.use_gpu:
                 self._warn("COLMAP was built without CUDA (or CUDA was not detected): running on CPU.")
 
@@ -185,14 +194,46 @@ class ReconstructionPipeline:
             self.tracker.done("prepare", f"{count} images ready ({report.kind})")
 
     def _quality_and_masks(self) -> None:
-        assert self.tracker is not None
+        run = self.run_paths
+        assert self.tracker is not None and self.report is not None
         self.tracker.skip("quality", "Not implemented yet (Milestone 2): all frames are used unfiltered.")
-        if self.config.capture.mode == "turntable":
-            self._warn(
-                "TURNTABLE capture without masks: COLMAP will likely match the static background instead of "
-                "the gemstone. Masking arrives in Milestone 2; use ORBIT_CAMERA captures for Milestone 1."
-            )
-        self.tracker.skip("masks", "Not implemented yet (Milestone 2): no masks applied.")
+        if not self.config.capture.requires_masks:
+            self.tracker.skip("masks", "Not needed for orbit-camera captures (the static background helps).")
+            return
+
+        mode = self.config.capture.mode
+        with self._stage("masks", "Checking gemstone masks"):
+            infos = frame_mask_info(run, self.report, self.config.masking)
+            counts = Counter(info.status for info in infos)
+            usable = [i for i in infos if i.usable]
+            areas = [i.area_ratio for i in usable if i.area_ratio is not None]
+            self.metrics["masks"] = {
+                "status_counts": dict(counts),
+                "usable_frames": len(usable),
+                "manual_masks": sum(1 for i in infos if i.manual),
+                "median_area_ratio": round(statistics.median(areas), 5) if areas else None,
+                "prompts": {k: asdict(v) for k, v in load_prompts(run).items()},
+            }
+            if counts.get("missing", 0) == len(infos):
+                raise PipelineError(
+                    "masks",
+                    f"{mode} captures need gemstone masks, otherwise COLMAP reconstructs the static background. "
+                    "Open the Preprocess page, click the stone in the first frame and generate masks "
+                    "(or run `python -m src.cli mask <run> --point X,Y`).",
+                )
+            if len(usable) < self.rcfg.min_images:
+                raise PipelineError(
+                    "masks",
+                    f"Only {len(usable)} frames have a usable mask (need {self.rcfg.min_images}). "
+                    f"Status counts: {dict(counts)}. Review the masks on the Preprocess page.",
+                )
+            excluded = len(infos) - len(usable)
+            if excluded:
+                self._warn(f"{excluded} frame(s) excluded because their mask is missing, empty, too large or rejected.")
+            self.image_list = write_image_list(run, infos)
+            self.masks_used = run.masks_dir
+            self.tracker.done("masks", f"{len(usable)}/{len(infos)} frames masked (median stone area "
+                                       f"{100 * (self.metrics['masks']['median_area_ratio'] or 0):.1f}% of frame)")
 
     def _run_with_cpu_fallback(self, stage_key: str, action, reset=None) -> None:
         """Run ``action``; if it fails on GPU, retry once on CPU."""
@@ -208,16 +249,63 @@ class ReconstructionPipeline:
                 reset()
             action()
 
+    def _prepare_views(self) -> None:
+        """Point COLMAP at one camera per image size when resolutions differ."""
+        run = self.run_paths
+        names = list_frame_names(run.frames_dir, self.image_list)
+        layout = layout_views(
+            run.root,
+            run.frames_dir,
+            names,
+            masks_dir=self.masks_used,
+            image_list=self.image_list,
+            share_intrinsics=self.rcfg.single_camera,
+        )
+        self.colmap_image_dir = layout.image_dir
+        self.masks_used = layout.mask_dir
+        self.image_list = layout.image_list
+        self._single_camera = layout.single_camera
+        self._single_camera_per_folder = layout.single_camera_per_folder
+        self.metrics["cameras"] = {
+            "size_counts": layout.size_counts,
+            "single_camera": layout.single_camera,
+            "single_camera_per_folder": layout.single_camera_per_folder,
+        }
+        if layout.single_camera_per_folder:
+            summary = ", ".join(f"{size} ({count})" for size, count in sorted(layout.size_counts.items()))
+            self._warn(
+                f"Images have {len(layout.size_counts)} different resolutions ({summary}). "
+                "Each resolution uses its own camera so frames are not skipped."
+            )
+
     def _features(self) -> None:
         run = self.run_paths
         assert self.runner is not None
         with self._stage("features", "SIFT feature extraction"):
+            self._prepare_views()
             run.database_path.unlink(missing_ok=True)
             self._run_with_cpu_fallback(
                 "features",
-                lambda: self.runner.extract_features(run.database_path, run.frames_dir),
+                lambda: self.runner.extract_features(
+                    run.database_path,
+                    self.colmap_image_dir or run.frames_dir,
+                    self.masks_used,
+                    self.image_list,
+                    single_camera=self._single_camera,
+                    single_camera_per_folder=self._single_camera_per_folder,
+                ),
                 reset=lambda: run.database_path.unlink(missing_ok=True),
             )
+            log = run.logs_dir / "feature_extraction.log"
+            skipped = log.read_text(encoding="utf-8", errors="replace").count("CAMERA_SINGLE_DIM_ERROR") if log.is_file() else 0
+            if skipped:
+                raise PipelineError(
+                    "features",
+                    f"{skipped} images were skipped because they do not share one image size while "
+                    "shared-camera mode is on. Re-run reconstruction; mixed photo and video sizes are now "
+                    "split into one camera per resolution.",
+                    log,
+                )
             stats = database_statistics(run.database_path)
             self.metrics["features"] = stats.to_dict()
             if stats.total_keypoints == 0:
@@ -248,8 +336,10 @@ class ReconstructionPipeline:
             if stats.verified_pairs == 0:
                 raise PipelineError(
                     "matching",
-                    "Poor feature matching: no image pair could be geometrically verified. Views may not "
-                    "overlap enough, or the object is too reflective/texture-poor.",
+                    f"Poor feature matching: {stats.images_with_features} images have features "
+                    f"({stats.total_keypoints:,} keypoints) but no pair could be geometrically verified. "
+                    "The views may not overlap, or the stone is too clear or shiny for SIFT to match. "
+                    "A matte coating such as developer spray usually gives a clear stone enough texture.",
                     run.logs_dir / "matching.log",
                 )
             self.tracker.done("matching", f"{matcher}: {stats.verified_pairs} verified image pairs")
@@ -257,11 +347,11 @@ class ReconstructionPipeline:
     def _sparse(self) -> None:
         run = self.run_paths
         assert self.runner is not None and self.report is not None
-        total = len(self.report.images)
+        total = self.metrics.get("masks", {}).get("usable_frames") or len(self.report.images)
         with self._stage("sparse", "Incremental Structure-from-Motion"):
             if run.sparse_dir.exists():
                 shutil.rmtree(run.sparse_dir)
-            self.runner.map(run.database_path, run.frames_dir, run.sparse_dir)
+            self.runner.map(run.database_path, self.colmap_image_dir or run.frames_dir, run.sparse_dir)
 
             models = sorted(
                 d for d in run.sparse_dir.iterdir()
@@ -341,10 +431,10 @@ class ReconstructionPipeline:
                 if run.dense_dir.exists():
                     shutil.rmtree(run.dense_dir)
                 run.dense_dir.mkdir(parents=True)
-                self.runner.undistort(run.frames_dir, self.best_model, run.dense_dir)
+                self.runner.undistort(self.colmap_image_dir or run.frames_dir, self.best_model, run.dense_dir)
                 self.runner.patch_match(run.dense_dir)
             with self._stage("fusion", "Fusing depth maps into a point cloud"):
-                self.runner.fuse(run.dense_dir, run.fused_ply)
+                self.runner.fuse(run.dense_dir, run.fused_ply, self.masks_used)
                 points = read_ply_header(run.fused_ply).vertex_count
                 self.metrics["dense"].update(ran=True, fused_points=points)
                 if points == 0:

@@ -23,8 +23,8 @@ photogrammetry engine.
 | Sparse-model Delaunay mesh fallback when CUDA is unavailable | done |
 | Interactive mesh / point-cloud viewer, PLY/OBJ/STL/GLB export | done |
 | Per-run reproducibility records (`run_config.json`, `metrics.json`, logs) | done |
+| Hand-held / turntable capture modes with SAM 2 gemstone masks | done |
 | Image quality filtering, duplicate removal | Milestone 2 |
-| Gemstone masks (required for turntable mode) | Milestone 2 |
 | Mesh cleaning, scale calibration (mm), volume | Milestone 2 |
 | Experimental comparison of capture conditions | Milestone 3 |
 
@@ -157,7 +157,7 @@ Every attempt, successful or failed, gets its own directory:
 runs/2026-09-29_001/
     input/            original uploads (untouched)
     frames/           images given to COLMAP
-    masks/            COLMAP masks (Milestone 2)
+    masks/            COLMAP masks (<frame>.png), prompts.json (clicks), selection.json (rejections)
     database.db       COLMAP features + matches
     sparse/0/ ...     COLMAP sparse model(s); sparse_txt/ holds TXT exports
     dense/            undistorted images, depth maps, fused.ply, meshed-*.ply (CUDA only)
@@ -188,9 +188,35 @@ likely optical and is itself a research result.
 - Lock focus/exposure if the camera app allows it; keep the zoom fixed (shared intrinsics).
 - Move slowly in video to avoid motion blur; 20-60 s of video sampled at 0.5 s is a good start.
 - Fill a large part of the frame with the stone while keeping it fully in view.
-- **Turntable:** the phone is fixed and the stone rotates. COLMAP assumes a static scene, so the
-  static background must be masked out. Masking is Milestone 2; until then turntable captures are
-  expected to fail.
+- **Turntable / hand-held:** see the next section.
+
+## Hand-held and turntable capture (object moves, camera static)
+
+COLMAP assumes a static scene. If the stone is rotated (in the fingers or on a turntable) in front
+of a static camera, COLMAP registers the *background* instead, and can even report a "successful"
+reconstruction of the floor. These modes therefore mask everything except the stone:
+
+1. Install SAM 2 once: `pip install -r requirements-sam2.txt` (PyTorch; uses CUDA, Apple MPS or CPU).
+2. Upload with capture mode **Hand-held** or **Turntable**.
+3. On **Preprocess**, click the stone in the first frame of each video (and on fingers with
+   *Not stone* if SAM 2 includes them), then **Generate masks**. SAM 2 tracks the stone through the
+   video; masks are eroded by `masking.erode_px` and saved as `masks/<frame>.png` (COLMAP layout).
+4. Review the overlays, reject bad frames or upload a manual mask, then **Reconstruct**.
+
+In these modes COLMAP receives `--ImageReader.mask_path`, an `--image_list_path` of usable frames,
+and the `object_capture` settings from `config.yaml` (full-resolution, denser SIFT, guided matching,
+relaxed mapper thresholds), because the stone typically covers only 2-5% of a phone frame.
+
+CLI: `python -m src.cli run stone.mov --mode handheld --point X,Y` (X,Y = stone pixel in frame 1).
+
+Hand-held tips: hold the stone by its two ends with fingertips, rotate slowly through a full turn,
+re-grip and turn about another axis, keep the phone fixed, use soft light and a plain black matte
+background.
+
+**Observed result (clear quartz, hand-held, sunlit paving):** SAM 2 isolated the crystal in all 38
+frames, but only 2/38 frames registered: features seen through a transparent crystal are not
+consistent between views. Masking solves the "wrong scene" problem, not the optical one; expect
+this mode to work for opaque/matte stones, or transparent stones with a temporary matte coating.
 
 ## Known gemstone limitations
 

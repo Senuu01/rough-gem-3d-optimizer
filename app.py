@@ -21,14 +21,14 @@ render_environment(environment_status())
 st.subheader("Workflow")
 st.markdown(
     """
-1. **Upload** - add photos/videos, choose capture mode and sampling, prepare frames.
-2. **Preprocess** - inspect the frames that will be sent to COLMAP.
+1. **Upload** - add photos/videos, choose capture mode (orbit / turntable / hand-held) and sampling.
+2. **Preprocess** - inspect frames; for turntable / hand-held captures, click the stone and generate
+   SAM 2 masks so COLMAP only sees the stone.
 3. **Reconstruct** - run COLMAP stage by stage with live progress and logs.
 4. **3D Model** - interactive mesh / point-cloud viewer and exports.
 5. **Analysis** - geometric statistics (unscaled until calibration exists).
 
-Milestone 1 status: frame-quality filtering, masking, mesh cleaning and scale calibration are **not yet
-implemented**; the corresponding stages are reported as skipped.
+Not yet implemented (reported as skipped): frame-quality filtering, mesh cleaning, scale calibration.
 """
 )
 st.info("Verify the pipeline with an opaque, textured object (e.g. a rough rock) before testing a gemstone.")

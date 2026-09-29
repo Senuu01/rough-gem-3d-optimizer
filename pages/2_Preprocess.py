@@ -8,6 +8,7 @@ from src.ingestion.dataset import load_ingestion_report, prepare_dataset
 from src.reconstruction.pipeline import load_run_config, save_run_config
 from src.ui.common import require_run
 from src.ui.launcher import is_running
+from src.ui.masks_panel import render_masks_panel
 from src.utils.logging import configure_run_logging
 
 st.set_page_config(page_title="Preprocess", page_icon="🖼️", layout="wide")
@@ -29,8 +30,8 @@ for error in report.errors:
     st.error(error)
 
 st.info(
-    "Image-quality metrics (blur, exposure, duplicates) and gemstone masks are Milestone 2 features and "
-    "are not computed yet. All frames below will be passed to COLMAP."
+    "Image-quality metrics (blur, exposure, duplicates) are not computed yet (Milestone 2); "
+    "all frames are passed to COLMAP unless excluded by masking below."
 )
 
 with st.expander("Re-extract video frames with different sampling"):
@@ -71,5 +72,7 @@ for i, img in enumerate(report.images[start:start + per_page]):
     path = run.frames_dir / img.output_name
     if path.is_file():
         grid[i % 6].image(str(path), caption=img.output_name, width="stretch")
+
+render_masks_panel(run, config, report)
 
 st.page_link("pages/3_Reconstruct.py", label="Continue to Reconstruct", icon="➡️")

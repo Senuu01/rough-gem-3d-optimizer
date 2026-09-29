@@ -81,6 +81,10 @@ def prepare_dataset(run: RunPaths, config: AppConfig) -> IngestionReport:
     if run.frames_dir.exists():
         shutil.rmtree(run.frames_dir)
     run.frames_dir.mkdir(parents=True)
+    # Masks belong to the old frames; click prompts (masks/prompts.json) are kept.
+    if run.masks_dir.is_dir():
+        for stale in [*run.masks_dir.glob("*.png"), run.masks_dir / "selection.json", run.masks_dir / "status.json"]:
+            stale.unlink(missing_ok=True)
 
     report = IngestionReport()
     log_file = run.logs_dir / "ingestion.log"

@@ -19,7 +19,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
 LOCAL_CONFIG_NAME = "config.local.yaml"
 
-CaptureMode = Literal["orbit_camera", "turntable"]
+CaptureMode = Literal["orbit_camera", "turntable", "handheld"]
+CAPTURE_MODES = ("orbit_camera", "turntable", "handheld")
+OBJECT_MOTION_MODES = ("turntable", "handheld")  # camera static, stone moves: masks required
 VideoSampling = Literal["interval", "auto"]
 MatcherType = Literal["auto", "exhaustive", "sequential"]
 MesherType = Literal["poisson", "delaunay"]
@@ -49,6 +51,33 @@ class ToolsConfig:
 @dataclass
 class CaptureConfig:
     mode: CaptureMode = "orbit_camera"
+
+    @property
+    def requires_masks(self) -> bool:
+        return self.mode in OBJECT_MOTION_MODES
+
+
+@dataclass
+class MaskingConfig:
+    sam2_model: str = "facebook/sam2.1-hiera-small"
+    device: str = "auto"
+    chunk_size: int = 60
+    erode_px: int = 7
+    min_area_ratio: float = 0.002
+    max_area_ratio: float = 0.6
+
+
+@dataclass
+class ObjectCaptureConfig:
+    max_image_size: int = 3840
+    peak_threshold: float = 0.004
+    domain_size_pooling: bool = True
+    estimate_affine_shape: bool = True
+    guided_matching: bool = True
+    sequential_overlap: int = 15
+    init_min_num_inliers: int = 30
+    abs_pose_min_num_inliers: int = 12
+    min_num_matches: int = 10
 
 
 @dataclass
@@ -105,6 +134,8 @@ class AppConfig:
     paths: PathsConfig = field(default_factory=PathsConfig)
     tools: ToolsConfig = field(default_factory=ToolsConfig)
     capture: CaptureConfig = field(default_factory=CaptureConfig)
+    masking: MaskingConfig = field(default_factory=MaskingConfig)
+    object_capture: ObjectCaptureConfig = field(default_factory=ObjectCaptureConfig)
     video: VideoConfig = field(default_factory=VideoConfig)
     images: ImagesConfig = field(default_factory=ImagesConfig)
     reconstruction: ReconstructionConfig = field(default_factory=ReconstructionConfig)
@@ -117,8 +148,16 @@ class AppConfig:
     def validate(self) -> None:
         """Check value ranges that the type system cannot express."""
         errors: list[str] = []
-        if self.capture.mode not in ("orbit_camera", "turntable"):
-            errors.append(f"capture.mode must be orbit_camera or turntable, got {self.capture.mode!r}")
+        if self.capture.mode not in CAPTURE_MODES:
+            errors.append(f"capture.mode must be one of {CAPTURE_MODES}, got {self.capture.mode!r}")
+        if self.masking.device not in ("auto", "cuda", "mps", "cpu"):
+            errors.append(f"masking.device must be auto, cuda, mps or cpu, got {self.masking.device!r}")
+        if self.masking.chunk_size < 2:
+            errors.append("masking.chunk_size must be >= 2")
+        if self.masking.erode_px < 0:
+            errors.append("masking.erode_px must be >= 0")
+        if not 0 <= self.masking.min_area_ratio < self.masking.max_area_ratio <= 1:
+            errors.append("masking area ratios must satisfy 0 <= min_area_ratio < max_area_ratio <= 1")
         if self.video.sampling not in ("interval", "auto"):
             errors.append(f"video.sampling must be interval or auto, got {self.video.sampling!r}")
         if self.video.interval_seconds <= 0:

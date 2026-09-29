@@ -6,7 +6,7 @@ under ``runs/`` so experiments are reproducible and comparable::
     runs/2026-09-29_001/
         input/          original uploads, untouched
         frames/         images fed to COLMAP (converted photos + sampled video frames)
-        masks/          COLMAP masks (Milestone 2)
+        masks/          COLMAP masks for turntable / hand-held captures
         database.db     COLMAP feature/match database
         sparse/         COLMAP sparse models (0/, 1/, ...)
         dense/          undistorted images, depth maps, fused.ply, meshes
